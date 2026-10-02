@@ -1,5 +1,7 @@
 # Health Overview
 
+[![Support · 1,99 €](https://img.shields.io/badge/Support-1%2C99_%E2%82%AC-2f855a)](https://marcfors.com/donate?from=health-overview)
+
 A personal weight and body-composition tracker. It reads InBody bioimpedance reports
 straight from a PDF or a phone photo, imports Apple Health data, and charts the whole
 history on one timeline.
@@ -59,3 +61,5 @@ never committed to this repository — `.env*` and any local data files are igno
 The GitHub Actions workflow typechecks, lints and builds every push. It also deploys to
 Vercel once `VERCEL_TOKEN`, `VERCEL_ORG_ID` and `VERCEL_PROJECT_ID` are set as repository
 secrets; until then the deploy job reports that it is not configured and passes.
+
+If this project is useful to you, you can [support it with 1,99 €](https://marcfors.com/donate?from=health-overview).

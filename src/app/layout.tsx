@@ -7,6 +7,8 @@ export const metadata: Metadata = {
   description: "Seguimiento de peso y composición corporal",
 };
 
+const SUPPORT_URL = "https://marcfors.com/donate?from=health-overview";
+
 const NAV = [
   { href: "/", label: "Panel" },
   { href: "/measurements", label: "Mediciones" },
@@ -32,6 +34,16 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
           </div>
         </nav>
         {children}
+        <footer className="mx-auto w-full max-w-5xl px-4 py-6 sm:px-6">
+          <a
+            href={SUPPORT_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-sm text-ink-secondary transition-colors hover:text-ink"
+          >
+            Apoyar · 1,99 €
+          </a>
+        </footer>
       </body>
     </html>
   );
