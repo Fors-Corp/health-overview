@@ -1,0 +1,19 @@
+version: 2
+# Every `uses:` in .github/workflows is pinned to a commit SHA with the tag
+# kept as a trailing comment (`@<sha> # <tag>`; see PR #2). A pin never
+# moves on its own, so without this entry the SHAs would quietly age out of
+# upstream's support window. Dependabot understands the pin-plus-comment form
+# and bumps the SHA and the comment together.
+#
+# Actions are the highest-consequence ecosystem here: a bump rewrites the code
+# CI executes. The cooldown mirrors forsight's, so an upstream release has a
+# week to be disclosed and yanked before it is proposed in this repo.
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      # Only `default-days`: Dependabot rejects `semver-major-days` for the
+      # github-actions ecosystem, and that makes the whole config invalid.
+      default-days: 7
