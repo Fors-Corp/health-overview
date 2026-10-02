@@ -18,9 +18,9 @@ jobs:
     name: Typecheck, lint and build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: 24
           cache: npm
@@ -50,7 +50,7 @@ jobs:
     runs-on: ubuntu-latest
     environment: production
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       # The deploy is opt-in: until the three Vercel secrets exist in the repository,
       # this job reports "not configured" and succeeds instead of failing every push.
@@ -68,7 +68,7 @@ jobs:
             echo "::notice::Vercel secrets not set - skipping deploy. Add VERCEL_TOKEN, VERCEL_ORG_ID and VERCEL_PROJECT_ID to enable it."
           fi
 
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         if: steps.creds.outputs.configured == 'true'
         with:
           node-version: 24
