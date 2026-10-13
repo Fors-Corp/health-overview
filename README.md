@@ -45,6 +45,8 @@ cp .env.example .env.local   # then fill in the values
 npm run db:push              # create the tables
 npm run dev
 npm test                     # unit tests, on node's built-in runner
+npm run db:test:up           # throwaway Postgres 18 in Docker, for:
+npm run test:db              # spend-guard tests against real Postgres and a fake Claude API
 ```
 
 ### Environment
@@ -57,6 +59,21 @@ npm test                     # unit tests, on node's built-in runner
 | `ANTHROPIC_API_KEY` | no | Enables reading image-only reports, the written summary and the recommendations (which always use `claude-opus-5-5`) |
 | `EXTRACTION_MODEL` | no | Defaults to `claude-opus-5` |
 | `INSIGHTS_MODEL` | no | Model for the written summary. Defaults to `claude-sonnet-5` |
+| `TEST_DATABASE_URL` | no | Database for `npm run test:db`. Defaults to the Docker one; must be local |
+
+## Claude spending
+
+Every Claude call goes through `src/lib/claude.ts`, the only module allowed to import the
+SDK (a unit test fails otherwise). Before each call it measures the exact request with the
+API's free token-count endpoint and refuses one over the feature's input cap, so no single
+call can book more than a fifth of the month. It then books the call's worst-case cost in
+the `ai_calls` ledger under a Postgres advisory lock, and refuses past **$5 a month** or a
+per-feature daily cap. Each call is made once, with no SDK retries, and then settled at its
+billed cost. Identical requests are answered from `ai_cache`, so reloading the dashboard or
+re-uploading the same scan costs nothing. The panel shows this month's spend.
+
+The budget and caps live in `src/lib/spend.ts`. For a limit no code can bypass, also set a
+monthly spend limit on the Anthropic Console workspace that issues the key.
 
 ## Notes on data
 
