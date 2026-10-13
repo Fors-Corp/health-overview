@@ -10,7 +10,10 @@
     "typecheck": "tsc --noEmit",
     "test": "node --test 'src/**/*.test.ts'",
     "db:push": "drizzle-kit push",
-    "db:seed": "TZ=Europe/Madrid node --env-file=.env.local scripts/seed.ts"
+    "db:seed": "TZ=Europe/Madrid node --env-file=.env.local scripts/seed.ts",
+    "test:db": "node --import ./test/register.mjs --test 'test/**/*.test.ts'",
+    "db:test:up": "docker compose -f docker-compose.test.yml up -d --wait",
+    "db:test:down": "docker compose -f docker-compose.test.yml down"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.126.0",

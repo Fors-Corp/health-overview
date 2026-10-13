@@ -98,6 +98,19 @@ const TOPIC_LABEL: Record<Recommendation["topic"], string> = {
   profesional: "Consulta profesional",
 };
 
+const RECOMMENDATIONS_UNAVAILABLE: Record<
+  Extract<RecommendationsResponse, { status: "unavailable" }>["reason"],
+  string
+> = {
+  no_api_key: "Configura la variable de entorno ANTHROPIC_API_KEY para activar las recomendaciones.",
+  budget: "Se ha alcanzado el presupuesto mensual de IA. Las recomendaciones vuelven el mes que viene.",
+  rate_limited: "Has alcanzado el máximo de recomendaciones de hoy. Vuelve a intentarlo mañana.",
+  error: "No se han podido generar las recomendaciones ahora mismo. Vuelve a intentarlo más tarde.",
+};
+
+const usd = (microUsd: number) =>
+  (microUsd / 1_000_000).toLocaleString("es-ES", { style: "currency", currency: "USD" });
+
 type RecommendationsState =
   | { name: "idle" }
   | { name: "loading" }
@@ -124,17 +137,17 @@ function RecommendationsBody({ state }: { state: RecommendationsState }) {
     );
   }
   if (result.status === "unavailable") {
-    return (
-      <p className="text-sm text-ink-secondary">
-        {result.reason === "no_api_key"
-          ? "Configura la variable de entorno ANTHROPIC_API_KEY para activar las recomendaciones."
-          : "No se han podido generar las recomendaciones ahora mismo. Vuelve a intentarlo más tarde."}
-      </p>
-    );
+    return <p className="text-sm text-ink-secondary">{RECOMMENDATIONS_UNAVAILABLE[result.reason]}</p>;
   }
 
   return (
-    <ul className="grid gap-2">
+    <>
+      {result.cached ? (
+        <p className="text-xs text-ink-muted">
+          Ya generadas para tus datos actuales; cambiarán cuando añadas mediciones.
+        </p>
+      ) : null}
+      <ul className="grid gap-2">
       {result.recommendations.map((r) => (
         <li key={r.title} className="rounded-lg border border-hairline p-3">
           <p className="text-xs font-medium text-ink-secondary">{TOPIC_LABEL[r.topic]}</p>
@@ -143,7 +156,8 @@ function RecommendationsBody({ state }: { state: RecommendationsState }) {
           <p className="mt-1 text-xs text-ink-muted">Basado en: {r.basis}</p>
         </li>
       ))}
-    </ul>
+      </ul>
+    </>
   );
 }
 
@@ -160,22 +174,28 @@ function Recommendations() {
     }
   }
 
+  // Once shown, the same data would only return the stored answer, so the button goes;
+  // it stays for a retry after a failure, which the daily cap still bounds.
+  const shown = state.name === "done" && state.result.status === "ok";
+
   return (
     <div className="grid gap-3 rounded-lg border border-hairline p-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h3 className="text-sm font-semibold text-ink">Recomendaciones</h3>
-        <button
-          type="button"
-          onClick={generate}
-          disabled={state.name === "loading"}
-          className="rounded-lg bg-ink px-3 py-1.5 text-sm font-medium text-page transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
-        >
-          {state.name === "loading"
-            ? "Generando…"
-            : state.name === "done"
-              ? "Volver a generar"
-              : "Generar recomendaciones"}
-        </button>
+        {shown ? null : (
+          <button
+            type="button"
+            onClick={generate}
+            disabled={state.name === "loading"}
+            className="rounded-lg bg-ink px-3 py-1.5 text-sm font-medium text-page transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            {state.name === "loading"
+              ? "Generando…"
+              : state.name === "done"
+                ? "Reintentar"
+                : "Generar recomendaciones"}
+          </button>
+        )}
       </div>
       <div aria-live="polite">
         <RecommendationsBody state={state} />
@@ -326,6 +346,15 @@ export function InsightsPanel() {
           Configura la variable de entorno ANTHROPIC_API_KEY para activar el resumen escrito. Las
           estadísticas de arriba funcionan igual sin ella.
         </p>
+      ) : narrativeUnavailable === "budget" ? (
+        <p className="text-xs text-ink-muted">
+          Se ha alcanzado el presupuesto mensual de IA. El resumen escrito vuelve el mes que
+          viene; las estadísticas de arriba funcionan igual.
+        </p>
+      ) : narrativeUnavailable === "rate_limited" ? (
+        <p className="text-xs text-ink-muted">
+          El resumen escrito ya se ha generado muchas veces hoy. Vuelve mañana.
+        </p>
       ) : narrativeUnavailable === "error" ? (
         <p className="text-xs text-ink-muted">
           No se ha podido generar el resumen escrito en este momento.
@@ -333,6 +362,14 @@ export function InsightsPanel() {
       ) : null}
 
       <Recommendations />
+
+      {data.spend ? (
+        <p className="text-xs text-ink-muted">
+          Gasto de IA este mes: {usd(data.spend.spentMicroUsd)} de{" "}
+          {usd(data.spend.budgetMicroUsd)}. Al llegar al límite, las funciones de IA se pausan
+          hasta el mes siguiente.
+        </p>
+      ) : null}
     </PanelShell>
   );
 }

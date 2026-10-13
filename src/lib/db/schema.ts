@@ -8,6 +8,8 @@ import {
   jsonb,
   unique,
   index,
+  bigint,
+  primaryKey,
 } from "drizzle-orm/pg-core";
 
 export const rawFiles = pgTable("raw_files", {
@@ -52,6 +54,45 @@ export const measurements = pgTable(
     unique("measurements_at_source_unique").on(t.measuredAt, t.source),
     index("measurements_measured_at_idx").on(t.measuredAt),
   ],
+);
+
+/**
+ * One row per Claude request, written by src/lib/claude.ts only. Money is integer
+ * micro-dollars because a single call costs fractions of a cent; prices are
+ * snapshotted onto the row so a later price change never rewrites past spend.
+ */
+export const aiCalls = pgTable(
+  "ai_calls",
+  {
+    id: serial("id").primaryKey(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    feature: text("feature").notNull(),
+    model: text("model").notNull(),
+    /** pending → settled (billed, cost known) | failed (rejected, not billed) | unknown. */
+    status: text("status").notNull(),
+    reservedMicroUsd: bigint("reserved_micro_usd", { mode: "number" }).notNull(),
+    costMicroUsd: bigint("cost_micro_usd", { mode: "number" }),
+    servedModel: text("served_model"),
+    inputTokens: integer("input_tokens"),
+    outputTokens: integer("output_tokens"),
+    cacheCreationTokens: integer("cache_creation_tokens"),
+    cacheReadTokens: integer("cache_read_tokens"),
+    inputCentsPerMTok: integer("input_cents_per_mtok").notNull(),
+    outputCentsPerMTok: integer("output_cents_per_mtok").notNull(),
+  },
+  (t) => [index("ai_calls_created_at_idx").on(t.createdAt)],
+);
+
+/** A Claude result per exact request, so repeating a request never pays twice. */
+export const aiCache = pgTable(
+  "ai_cache",
+  {
+    feature: text("feature").notNull(),
+    key: text("key").notNull(),
+    value: jsonb("value").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.feature, t.key] })],
 );
 
 export type SegmentSet = {
