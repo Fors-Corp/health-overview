@@ -5,7 +5,9 @@ import {
   rapidSwings,
   summarise,
   toDailySeries,
+  weightPhases,
   type Reading,
+  type WeightPhase,
 } from "@/lib/stats";
 import { BodyFatChart, CompositionChart, WeightChart, type ChartPoint } from "@/components/charts";
 import { InsightsPanel } from "@/components/insights";
@@ -22,6 +24,19 @@ const fmtDate = (day: string) =>
     year: "numeric",
     timeZone: "UTC",
   });
+
+const signed = (v: number) => `${v > 0 ? "+" : ""}${v.toFixed(1)}`;
+
+function fmtDuration(days: number): string {
+  if (days < 14) return `${days} días`;
+  if (days < 60) return `${Math.round(days / 7)} sem`;
+  return `${Math.round(days / 30.44)} meses`;
+}
+
+const PHASE_LABEL: Record<WeightPhase["direction"], string> = {
+  loss: "↓ Bajada",
+  gain: "↑ Subida",
+};
 
 function StatTile({
   label,
@@ -75,6 +90,8 @@ export default async function Dashboard() {
   const trend = movingAverage(points);
   const stats = summarise(points);
   const swings = rapidSwings(points).slice(-3);
+  const phases = weightPhases(points);
+  const currentPhase = phases.at(-1) ?? null;
 
   // The device reports fat mass on only 4 of the 13 scans, but body-fat % is on all
   // of them — so the split is derived where it wasn't printed, and the reported
@@ -174,6 +191,79 @@ export default async function Dashboard() {
           <BodyFatChart scans={scans} />
         </div>
       </section>
+
+      {currentPhase ? (
+        <section
+          aria-label="Fases de peso"
+          className="mb-8 rounded-xl border border-hairline bg-surface p-4 sm:p-5"
+        >
+          <h2 className="text-base font-semibold text-ink">Fases de peso</h2>
+          <p className="mt-0.5 mb-3 text-xs text-ink-secondary">
+            Tramos de bajada y subida. Una fase termina cuando el peso da la vuelta con claridad;
+            los vaivenes de pocos kilos quedan dentro de la fase.
+          </p>
+          <p className="mb-4 rounded-lg border border-hairline p-3 text-sm text-ink">
+            <span className="font-medium">
+              Ahora: {currentPhase.direction === "gain" ? "subida" : "bajada"}
+            </span>{" "}
+            desde el {fmtDate(currentPhase.start.day)} ({currentPhase.start.weightKg!.toFixed(1)}{" "}
+            kg) ·{" "}
+            <span className="tabular-nums">
+              {signed(currentPhase.deltaKg)} kg en {fmtDuration(currentPhase.days)}
+              {currentPhase.rateKgPerWeek !== null
+                ? ` · ${signed(currentPhase.rateKgPerWeek)} kg/sem`
+                : ""}
+            </span>
+            {latest && latest.day !== currentPhase.end.day
+              ? ` · ${currentPhase.direction === "gain" ? "máximo" : "mínimo"} de la fase ${currentPhase.end.weightKg!.toFixed(1)} kg el ${fmtDate(currentPhase.end.day)}`
+              : null}
+          </p>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-hairline text-left text-xs text-ink-secondary">
+                  <th className="py-2 pr-3 font-medium">Fase</th>
+                  <th className="py-2 pr-3 font-medium">Periodo</th>
+                  <th className="py-2 pr-3 text-right font-medium">Peso</th>
+                  <th className="py-2 pr-3 text-right font-medium">Cambio</th>
+                  <th className="py-2 pr-3 text-right font-medium">Duración</th>
+                  <th className="py-2 text-right font-medium">Ritmo</th>
+                </tr>
+              </thead>
+              <tbody>
+                {phases
+                  .slice()
+                  .reverse()
+                  .map((p) => (
+                    <tr key={p.start.day} className="border-b border-hairline/60 last:border-0">
+                      <td className="py-2 pr-3 whitespace-nowrap text-ink">
+                        {PHASE_LABEL[p.direction]}
+                        {p.ongoing ? (
+                          <span className="ml-1 text-xs text-ink-secondary">(en curso)</span>
+                        ) : null}
+                      </td>
+                      <td className="py-2 pr-3 whitespace-nowrap text-ink-secondary">
+                        {fmtDate(p.start.day)} → {fmtDate(p.end.day)}
+                      </td>
+                      <td className="py-2 pr-3 text-right whitespace-nowrap tabular-nums text-ink">
+                        {p.start.weightKg!.toFixed(1)} → {p.end.weightKg!.toFixed(1)}
+                      </td>
+                      <td className="py-2 pr-3 text-right tabular-nums text-ink">
+                        {signed(p.deltaKg)} kg
+                      </td>
+                      <td className="py-2 pr-3 text-right whitespace-nowrap text-ink">
+                        {fmtDuration(p.days)}
+                      </td>
+                      <td className="py-2 text-right whitespace-nowrap tabular-nums text-ink">
+                        {p.rateKgPerWeek !== null ? `${signed(p.rateKgPerWeek)} kg/sem` : "—"}
+                      </td>
+                    </tr>
+                  ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      ) : null}
 
       {swings.length > 0 ? (
         <section
