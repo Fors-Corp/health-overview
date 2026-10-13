@@ -1,7 +1,9 @@
-import Anthropic from "@anthropic-ai/sdk";
-import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import { extractText, getDocumentProxy } from "unpdf";
 import { z } from "zod";
+import { lastText, parseJson, runClaude, zodOutputFormat } from "@/lib/claude";
+
+/** InBody reports are one or two pages; anything longer is not a report. */
+export const MAX_PDF_PAGES = 5;
 
 const Segment = z.object({
   leftArm: z.number().nullable(),
@@ -122,18 +124,35 @@ async function tryPdfText(buffer: Buffer): Promise<Extraction | null> {
   };
 }
 
-export class MissingApiKeyError extends Error {
-  constructor() {
-    super(
-      "Falta la clave ANTHROPIC_API_KEY. Este informe es una imagen (sin capa de texto), así que hace falta la lectura visual para interpretarlo.",
-    );
-    this.name = "MissingApiKeyError";
+/** Why a report could not be read; the route turns the code into a message and a status. */
+export class ExtractionUnavailableError extends Error {
+  readonly reason:
+    | "no_api_key"
+    | "budget"
+    | "rate_limited"
+    | "too_many_pages"
+    | "too_large"
+    | "error";
+
+  constructor(reason: ExtractionUnavailableError["reason"]) {
+    super(`extraction unavailable: ${reason}`);
+    this.name = "ExtractionUnavailableError";
+    this.reason = reason;
+  }
+}
+
+const PROMPT =
+  "Extract every value from this body-composition report, including all prior tests shown in the history chart at the bottom.";
+
+async function pdfPageCount(buffer: Buffer): Promise<number | null> {
+  try {
+    return (await getDocumentProxy(new Uint8Array(buffer))).numPages;
+  } catch {
+    return null;
   }
 }
 
 async function extractWithClaude(buffer: Buffer, contentType: string): Promise<Extraction> {
-  if (!process.env.ANTHROPIC_API_KEY) throw new MissingApiKeyError();
-  const client = new Anthropic();
   const b64 = buffer.toString("base64");
 
   const source =
@@ -155,32 +174,21 @@ async function extractWithClaude(buffer: Buffer, contentType: string): Promise<E
           },
         };
 
-  const response = await client.messages.parse({
-    model: process.env.EXTRACTION_MODEL ?? "claude-opus-5",
-    max_tokens: 16000,
-    system: SYSTEM,
-    messages: [
-      {
-        role: "user",
-        content: [
-          source,
-          {
-            type: "text",
-            text: "Extract every value from this body-composition report, including all prior tests shown in the history chart at the bottom.",
-          },
-        ],
-      },
-    ],
-    output_config: { format: zodOutputFormat(ExtractionSchema) },
+  // The same file uploaded again is served from the cache instead of read again.
+  const outcome = await runClaude("extraction", {
+    params: {
+      system: SYSTEM,
+      messages: [{ role: "user", content: [source, { type: "text", text: PROMPT }] }],
+      output_config: { format: zodOutputFormat(ExtractionSchema) },
+    },
+    read: (message) => {
+      const parsed = ExtractionSchema.safeParse(parseJson(lastText(message)));
+      return parsed.success ? parsed.data : null;
+    },
   });
 
-  if (response.stop_reason === "refusal") {
-    throw new Error("El modelo rechazó la solicitud al leer el informe.");
-  }
-  if (!response.parsed_output) {
-    throw new Error("No se pudo interpretar el informe como datos estructurados.");
-  }
-  return response.parsed_output;
+  if (outcome.status === "ok") return outcome.value;
+  throw new ExtractionUnavailableError(outcome.status === "refused" ? "error" : outcome.reason);
 }
 
 export async function extractFromFile(
@@ -188,6 +196,12 @@ export async function extractFromFile(
   contentType: string,
 ): Promise<ExtractionResult> {
   if (contentType === "application/pdf") {
+    // What a PDF costs is measured before the call; the page cap only turns away
+    // documents that are clearly not a report.
+    const pages = await pdfPageCount(buffer);
+    if (pages !== null && pages > MAX_PDF_PAGES) {
+      throw new ExtractionUnavailableError("too_many_pages");
+    }
     const local = await tryPdfText(buffer);
     if (local) return { method: "pdf_text", data: local };
   }
