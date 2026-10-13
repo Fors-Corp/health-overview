@@ -39,6 +39,9 @@ jobs:
       - name: Lint
         run: npx eslint src
 
+      - name: Unit tests
+        run: npm test
+
       # The database client is built lazily, so the build needs no database config.
       - name: Build
         run: npm run build
