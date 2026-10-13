@@ -14,6 +14,7 @@ const NAV = [
   { href: "/measurements", label: "Mediciones" },
   { href: "/upload", label: "Subir informe" },
   { href: "/import-health", label: "Apple Health" },
+  { href: "/import-log", label: "Importar registro" },
 ];
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
