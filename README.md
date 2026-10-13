@@ -21,8 +21,15 @@ single series so the trend is actually readable.
   reads those too, so one upload can recover several earlier scans.
 - **Apple Health import.** Streams `export.xml` in the browser — the file never leaves the
   device — and sends only a daily summary to the server.
+- **Notes-log import.** Paste a weight log kept in a notes app (year headings, Spanish,
+  Italian or English months, comma decimals). Each entry is shown as new, already saved or
+  conflicting before anything is saved, and an entry filed under the wrong year is flagged.
 - **Trend analysis.** Time-windowed moving average, kg/week rate, plateau detection, and
   flags for rapid swings that are water rather than fat.
+- **Weight phases.** Splits the history into loss and regain phases, with their duration and
+  rate, and shows the phase in progress.
+- **Recommendations.** On request, Claude turns the computed figures — never the raw
+  measurements — into a few practical recommendations, each citing the figure it rests on.
 - **Segmental view.** Per-limb lean and fat mass from InBody scans.
 
 ## Stack
@@ -37,6 +44,7 @@ createdb health_overview
 cp .env.example .env.local   # then fill in the values
 npm run db:push              # create the tables
 npm run dev
+npm test                     # unit tests, on node's built-in runner
 ```
 
 ### Environment
@@ -46,9 +54,9 @@ npm run dev
 | `DATABASE_URL` | yes | PostgreSQL connection string |
 | `AUTH_SECRET` | yes | Signs the session cookie. Generate with `openssl rand -hex 32` |
 | `APP_PASSWORD` | yes | The password that opens the app. Authentication fails closed if unset |
-| `ANTHROPIC_API_KEY` | no | Enables reading image-only reports and the written summary |
+| `ANTHROPIC_API_KEY` | no | Enables reading image-only reports, the written summary and the recommendations (which always use `claude-opus-5-5`) |
 | `EXTRACTION_MODEL` | no | Defaults to `claude-opus-5` |
-| `INSIGHTS_MODEL` | no | Defaults to `claude-sonnet-5` |
+| `INSIGHTS_MODEL` | no | Model for the written summary. Defaults to `claude-sonnet-5` |
 
 ## Notes on data
 
