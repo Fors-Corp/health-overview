@@ -1,9 +1,16 @@
 import { asc } from "drizzle-orm";
 import { NextResponse } from "next/server";
-import Anthropic from "@anthropic-ai/sdk";
-import { betaZodOutputFormat } from "@anthropic-ai/sdk/helpers/beta/zod";
 import { z } from "zod";
+import {
+  lastText,
+  parseJson,
+  runClaude,
+  spentThisMonthMicroUsd,
+  zodOutputFormat,
+  type ClaudeOutcome,
+} from "@/lib/claude";
 import { db, measurements } from "@/lib/db";
+import { MONTHLY_BUDGET_MICRO_USD } from "@/lib/spend";
 import {
   rapidSwings,
   summarise,
@@ -16,6 +23,8 @@ import {
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+// Above the slowest policy: a 15 s token count plus the recommendations' 120 s timeout.
+export const maxDuration = 150;
 
 const DAY_MS = 86_400_000;
 
@@ -104,12 +113,14 @@ export type InsightsStats = {
   totalReadings: number;
 };
 
-type NarrativeUnavailable = "no_api_key" | "error" | null;
+type NarrativeUnavailable = "no_api_key" | "budget" | "rate_limited" | "error" | null;
 
 export type InsightsResponse = {
   stats: InsightsStats;
   narrative: string | null;
   narrativeUnavailable: NarrativeUnavailable;
+  /** This calendar month's Claude spend against the budget; null if the ledger is unreadable. */
+  spend: { spentMicroUsd: number; budgetMicroUsd: number } | null;
 };
 
 /** Step 1 — everything here is arithmetic over src/lib/stats.ts output. No LLM involved. */
@@ -213,63 +224,56 @@ Reglas estrictas:
 
 /**
  * Step 2 (optional) — short Spanish narrative over the numbers computed in Step 1.
- * Only the computed stats are sent, never the raw measurement rows.
+ * Only the computed stats are sent, never the raw measurement rows. The result is
+ * cached per exact stats, so reloading the dashboard never pays for it twice.
  */
-async function generateNarrative(stats: InsightsStats): Promise<string | null> {
-  const client = new Anthropic();
-  const model = process.env.INSIGHTS_MODEL ?? "claude-sonnet-5";
-
-  const response = await client.messages.create({
-    model,
-    max_tokens: 600,
-    system: NARRATIVE_SYSTEM,
-    output_config: { effort: "low" },
-    messages: [
-      {
-        role: "user",
-        content: `Estas son las cifras ya calculadas a partir de mi historial de peso y composición corporal. Escribe la interpretación siguiendo tus reglas:\n\n${JSON.stringify(stats, null, 2)}`,
-      },
-    ],
+async function generateNarrative(stats: InsightsStats) {
+  const content = `Estas son las cifras ya calculadas a partir de mi historial de peso y composición corporal. Escribe la interpretación siguiendo tus reglas:\n\n${JSON.stringify(stats, null, 2)}`;
+  return runClaude("narrative", {
+    params: {
+      system: NARRATIVE_SYSTEM,
+      output_config: { effort: "low" },
+      messages: [{ role: "user", content }],
+    },
+    read: (message) => lastText(message)?.trim() || null,
   });
+}
 
-  if (response.stop_reason === "refusal") return null;
+type Unavailable = Extract<ClaudeOutcome<unknown>, { status: "unavailable" }>["reason"];
 
-  const textBlock = response.content.find((b) => b.type === "text");
-  const text = textBlock && "text" in textBlock ? textBlock.text.trim() : "";
-  return text.length > 0 ? text : null;
+/** The stats are built here, not uploaded: a request over the size cap is our own error. */
+const shownReason = (reason: Unavailable) => (reason === "too_large" ? "error" : reason);
+
+/** Shown in the panel; null when the ledger cannot be read. */
+async function spendSummary(): Promise<InsightsResponse["spend"]> {
+  try {
+    return {
+      spentMicroUsd: await spentThisMonthMicroUsd(),
+      budgetMicroUsd: MONTHLY_BUDGET_MICRO_USD,
+    };
+  } catch {
+    return null;
+  }
 }
 
 export async function GET() {
   // Step 1 is the product: it must always succeed and always return 200.
   const stats = await computeStats();
 
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) {
-    return NextResponse.json<InsightsResponse>({
-      stats,
-      narrative: null,
-      narrativeUnavailable: "no_api_key",
-    });
-  }
-
-  // Step 2 is a bonus: any failure here must never break the panel.
-  try {
-    const narrative = await generateNarrative(stats);
-    return NextResponse.json<InsightsResponse>({
-      stats,
-      narrative,
-      narrativeUnavailable: narrative ? null : "error",
-    });
-  } catch {
-    return NextResponse.json<InsightsResponse>({
-      stats,
-      narrative: null,
-      narrativeUnavailable: "error",
-    });
-  }
+  // Step 2 is a bonus: runClaude reports every failure as an outcome, never a throw.
+  const outcome = await generateNarrative(stats);
+  return NextResponse.json<InsightsResponse>({
+    stats,
+    narrative: outcome.status === "ok" ? outcome.value : null,
+    narrativeUnavailable:
+      outcome.status === "ok"
+        ? null
+        : outcome.status === "refused"
+          ? "error"
+          : shownReason(outcome.reason),
+    spend: await spendSummary(),
+  });
 }
-
-const RECOMMENDATIONS_MODEL = "claude-opus-5-5";
 
 const RecommendationsSchema = z.object({
   recommendations: z.array(
@@ -284,19 +288,10 @@ const RecommendationsSchema = z.object({
 
 export type Recommendation = z.infer<typeof RecommendationsSchema>["recommendations"][number];
 
-/** Malformed JSON becomes a schema failure, reported with the rest below. */
-function parseJson(text: string): unknown {
-  try {
-    return JSON.parse(text);
-  } catch {
-    return undefined;
-  }
-}
-
 export type RecommendationsResponse =
-  | { status: "ok"; recommendations: Recommendation[] }
+  | { status: "ok"; recommendations: Recommendation[]; cached: boolean }
   | { status: "refused" }
-  | { status: "unavailable"; reason: "no_api_key" | "error" };
+  | { status: "unavailable"; reason: "no_api_key" | "budget" | "rate_limited" | "error" };
 
 const RECOMMENDATIONS_SYSTEM = `Propones recomendaciones prácticas, en español, a partir de las cifras ya calculadas del historial de peso y composición corporal de un usuario.
 
@@ -314,74 +309,46 @@ Límites:
 - Segunda persona, tono neutro y amable: sin culpa, sin alarmismo y sin lenguaje de retos o logros.
 - De 3 a 5 recomendaciones, de la más a la menos relevante. "title": una frase corta. "detail": de una a tres frases.`;
 
+const UNAVAILABLE_STATUS = { no_api_key: 200, budget: 429, rate_limited: 429, error: 502 } as const;
+
 /**
  * Recommendations cost an Opus call with thinking, so they are generated on request
- * rather than on every dashboard load like the narrative. As with the narrative, only
- * the computed stats leave the server — never the raw measurement rows.
+ * rather than on every dashboard load. As with the narrative, only the computed stats
+ * leave the server, and unchanged stats return the stored answer for free.
  */
 export async function POST() {
-  if (!process.env.ANTHROPIC_API_KEY) {
-    return NextResponse.json<RecommendationsResponse>({
-      status: "unavailable",
-      reason: "no_api_key",
-    });
-  }
-
   const stats = await computeStats();
+  const content = `Estas son las cifras ya calculadas a partir de mi historial de peso y composición corporal:\n\n${JSON.stringify(stats, null, 2)}`;
 
-  try {
-    // create() rather than parse(): parse() validates every text block before returning,
-    // so a refusal carrying partial text would throw instead of reading as a refusal.
-    const response = await new Anthropic().beta.messages.create({
-      model: RECOMMENDATIONS_MODEL,
-      max_tokens: 16000,
-      // A safety-classifier decline is re-run server-side on the model the API picks for
-      // that category, so a health topic tripping a classifier still gets an answer.
-      betas: ["server-side-fallback-2026-07-01"],
-      fallbacks: "default",
+  // No server-side fallback: each hop of a fallback chain bills its own input and output,
+  // and the chain behind "default" is unpublished, so its worst case could not be booked.
+  const outcome = await runClaude("recommendations", {
+    params: {
       system: RECOMMENDATIONS_SYSTEM,
-      output_config: { effort: "medium", format: betaZodOutputFormat(RecommendationsSchema) },
-      messages: [
-        {
-          role: "user",
-          content: `Estas son las cifras ya calculadas a partir de mi historial de peso y composición corporal:\n\n${JSON.stringify(stats, null, 2)}`,
-        },
-      ],
-    });
-
-    if (response.stop_reason === "refusal") {
-      return NextResponse.json<RecommendationsResponse>({ status: "refused" });
-    }
-
-    // The last text block: after a fallback, earlier blocks belong to the declined model.
-    const text = response.content
-      .filter((b): b is Anthropic.Beta.BetaTextBlock => b.type === "text")
-      .at(-1)?.text;
-    const parsed =
-      response.stop_reason === "end_turn" && text !== undefined
-        ? RecommendationsSchema.safeParse(parseJson(text))
+      output_config: { effort: "medium", format: zodOutputFormat(RecommendationsSchema) },
+      messages: [{ role: "user", content }],
+    },
+    read: (message) => {
+      const parsed = RecommendationsSchema.safeParse(parseJson(lastText(message)));
+      return parsed.success && parsed.data.recommendations.length > 0
+        ? parsed.data.recommendations
         : null;
-    if (!parsed?.success || parsed.data.recommendations.length === 0) {
-      console.error(`recommendations: unusable response (stop_reason ${response.stop_reason})`);
-      return NextResponse.json<RecommendationsResponse>(
-        { status: "unavailable", reason: "error" },
-        { status: 502 },
-      );
-    }
+    },
+  });
 
+  if (outcome.status === "ok") {
     return NextResponse.json<RecommendationsResponse>({
       status: "ok",
-      recommendations: parsed.data.recommendations,
+      recommendations: outcome.value,
+      cached: outcome.cached,
     });
-  } catch (error) {
-    // Only the error class and status are logged: the request itself carries health data.
-    console.error(
-      "recommendations: request failed",
-      error instanceof Anthropic.APIError ? `${error.status} ${error.name}` : (error as Error)?.name,
-    );
-    return NextResponse.json<RecommendationsResponse>(
-      { status: "unavailable", reason: "error" },
-      { status: 502 },
-    );
   }
+  if (outcome.status === "refused") {
+    return NextResponse.json<RecommendationsResponse>({ status: "refused" });
+  }
+  const reason = shownReason(outcome.reason);
+  return NextResponse.json<RecommendationsResponse>(
+    { status: "unavailable", reason },
+    { status: UNAVAILABLE_STATUS[reason] },
+  );
 }
