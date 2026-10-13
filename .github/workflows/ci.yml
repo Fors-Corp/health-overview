@@ -17,6 +17,22 @@ jobs:
   checks:
     name: Typecheck, lint and build
     runs-on: ubuntu-latest
+    # The spend-guard tests need a real Postgres; this matches docker-compose.test.yml,
+    # so test/support.ts finds it at its default URL.
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: health_overview_test
+        ports:
+          - 54329:5432
+        options: >-
+          --health-cmd "pg_isready -U test -d health_overview_test"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -41,6 +57,10 @@ jobs:
 
       - name: Unit tests
         run: npm test
+
+      # Fails, rather than skips, if the database is unreachable.
+      - name: Spend-guard tests (Postgres, fake Claude API)
+        run: npm run test:db
 
       # The database client is built lazily, so the build needs no database config.
       - name: Build
