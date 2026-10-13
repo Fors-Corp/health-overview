@@ -83,8 +83,9 @@ never committed to this repository — `.env*` and any local data files are igno
 
 ## Deployment
 
-The GitHub Actions workflow typechecks, lints and builds every push. It also deploys to
-Vercel once `VERCEL_TOKEN`, `VERCEL_ORG_ID` and `VERCEL_PROJECT_ID` are set as repository
-secrets; until then the deploy job reports that it is not configured and passes.
+The GitHub Actions workflow typechecks, lints, tests and builds every push, and each
+push to `main` that passes is deployed to Vercel. The deploy needs `VERCEL_TOKEN`,
+`VERCEL_ORG_ID` and `VERCEL_PROJECT_ID` as secrets; if any is missing, the deploy job
+fails rather than skipping, so a push never looks deployed when it is not.
 
 If this project is useful to you, you can [support it with 1,99 €](https://marcfors.com/donate?from=health-overview).

@@ -75,34 +75,33 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # The deploy is opt-in: until the three Vercel secrets exist in the repository,
-      # this job reports "not configured" and succeeds instead of failing every push.
+      # Fails closed. A missing secret must turn the run red: skipping would leave
+      # production on an old build behind a green check, and `vercel pull --yes` without
+      # the project and org IDs would link whichever project the CLI guesses.
       - name: Check Vercel credentials
-        id: creds
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
         run: |
-          if [ -n "$VERCEL_TOKEN" ] && [ -n "$VERCEL_ORG_ID" ] && [ -n "$VERCEL_PROJECT_ID" ]; then
-            echo "configured=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "configured=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::Vercel secrets not set - skipping deploy. Add VERCEL_TOKEN, VERCEL_ORG_ID and VERCEL_PROJECT_ID to enable it."
+          missing=""
+          for name in VERCEL_TOKEN VERCEL_ORG_ID VERCEL_PROJECT_ID; do
+            [ -n "${!name}" ] || missing="$missing $name"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::Cannot deploy, missing secrets:$missing"
+            exit 1
           fi
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        if: steps.creds.outputs.configured == 'true'
         with:
           node-version: 24
           cache: npm
 
       - name: Install Vercel CLI
-        if: steps.creds.outputs.configured == 'true'
         run: npm install --global vercel@latest
 
       - name: Pull Vercel environment
-        if: steps.creds.outputs.configured == 'true'
         env:
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
@@ -110,7 +109,6 @@ jobs:
         run: vercel pull --yes --environment=production
 
       - name: Build
-        if: steps.creds.outputs.configured == 'true'
         env:
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
@@ -118,7 +116,6 @@ jobs:
         run: vercel build --prod
 
       - name: Deploy
-        if: steps.creds.outputs.configured == 'true'
         env:
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
