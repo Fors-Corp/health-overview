@@ -121,6 +121,100 @@ export function rapidSwings(
   return out;
 }
 
+export type WeightPhase = {
+  direction: "loss" | "gain";
+  start: DailyPoint;
+  end: DailyPoint;
+  deltaKg: number;
+  days: number;
+  rateKgPerWeek: number | null;
+  /** The last phase: its end is the most extreme reading so far, not a confirmed turn. */
+  ongoing: boolean;
+};
+
+/**
+ * TODO(marc): decide what counts as the weight turning around.
+ *
+ * Current rule: a move of 5 kg back from the lowest (or highest) point of the phase.
+ * Smaller, and a holiday or a week of water retention opens a new phase; larger, and
+ * real cycles merge — at 8 kg a rebound, a short dip and a second climb read as one long
+ * rise. A fixed kg threshold is also a smaller share of body weight at 120 kg than at
+ * 75 kg; a percentage would scale with you instead.
+ */
+export function phaseReversed(extremeKg: number, currentKg: number): boolean {
+  // Rounded to the scale's 10 g, or 64.1 → 59.1 would be 4.9999… kg and not count.
+  return Number(Math.abs(currentKg - extremeKg).toFixed(2)) >= 5;
+}
+
+function toPhase(
+  direction: WeightPhase["direction"],
+  start: DailyPoint,
+  end: DailyPoint,
+  ongoing: boolean,
+): WeightPhase {
+  const days = Math.round((end.t - start.t) / DAY_MS);
+  const deltaKg = Number((end.weightKg! - start.weightKg!).toFixed(2));
+  return {
+    direction,
+    start,
+    end,
+    deltaKg,
+    days,
+    rateKgPerWeek: days > 0 ? Number(((deltaKg / days) * 7).toFixed(2)) : null,
+    ongoing,
+  };
+}
+
+/**
+ * Splits the history into alternating loss and gain phases — a zig-zag over the raw
+ * readings rather than a smoothed curve, because month-long gaps would blur where the
+ * turns happened. A phase only ends once the weight has moved back far enough from its
+ * extreme (see phaseReversed), so a few days of water never open a new phase. Ties at
+ * the extreme resolve to the later reading: the turn is the last day at the low.
+ */
+export function weightPhases(points: DailyPoint[]): WeightPhase[] {
+  const withWeight = points.filter((p) => p.weightKg !== null);
+  const phases: WeightPhase[] = [];
+  if (withWeight.length < 2) return phases;
+
+  let direction: WeightPhase["direction"] | null = null;
+  let high = withWeight[0];
+  let low = withWeight[0];
+  let start = withWeight[0];
+  let extreme = withWeight[0];
+
+  for (const p of withWeight.slice(1)) {
+    const kg = p.weightKg!;
+    if (direction === null) {
+      if (kg >= high.weightKg!) high = p;
+      if (kg <= low.weightKg!) low = p;
+      if (kg < high.weightKg! && phaseReversed(high.weightKg!, kg)) {
+        direction = "loss";
+        start = high;
+        extreme = p;
+      } else if (kg > low.weightKg! && phaseReversed(low.weightKg!, kg)) {
+        direction = "gain";
+        start = low;
+        extreme = p;
+      }
+      continue;
+    }
+
+    const continues = direction === "loss" ? kg <= extreme.weightKg! : kg >= extreme.weightKg!;
+    if (continues) {
+      extreme = p;
+    } else if (phaseReversed(extreme.weightKg!, kg)) {
+      phases.push(toPhase(direction, start, extreme, false));
+      direction = direction === "loss" ? "gain" : "loss";
+      start = extreme;
+      extreme = p;
+    }
+  }
+
+  if (direction !== null) phases.push(toPhase(direction, start, extreme, true));
+  return phases;
+}
+
 /**
  * TODO(marc): tune this to what a plateau actually means for you.
  *

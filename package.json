@@ -8,6 +8,7 @@
     "start": "next start",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
+    "test": "node --test 'src/**/*.test.ts'",
     "db:push": "drizzle-kit push",
     "db:seed": "TZ=Europe/Madrid node --env-file=.env.local scripts/seed.ts"
   },
