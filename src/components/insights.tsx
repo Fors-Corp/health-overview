@@ -1,7 +1,11 @@
 "use client";
 
 import { useEffect, useState, type ReactNode } from "react";
-import type { InsightsResponse } from "@/app/api/insights/route";
+import type {
+  InsightsResponse,
+  Recommendation,
+  RecommendationsResponse,
+} from "@/app/api/insights/route";
 
 const LONG_GAP_DAYS = 14;
 
@@ -84,6 +88,103 @@ function PanelShell({ children }: { children: ReactNode }) {
     >
       {children}
     </section>
+  );
+}
+
+const TOPIC_LABEL: Record<Recommendation["topic"], string> = {
+  medicion: "Medición",
+  tendencia: "Tendencia",
+  mantenimiento: "Mantenimiento",
+  profesional: "Consulta profesional",
+};
+
+type RecommendationsState =
+  | { name: "idle" }
+  | { name: "loading" }
+  | { name: "done"; result: RecommendationsResponse };
+
+function RecommendationsBody({ state }: { state: RecommendationsState }) {
+  if (state.name === "idle") {
+    return (
+      <p className="text-sm text-ink-secondary">
+        Claude revisa tus fases, ritmos y escáneres y propone de 3 a 5 recomendaciones.
+      </p>
+    );
+  }
+  if (state.name === "loading") {
+    return <p className="text-sm text-ink-secondary">Analizando tu historial…</p>;
+  }
+
+  const { result } = state;
+  if (result.status === "refused") {
+    return (
+      <p className="text-sm text-ink-secondary">
+        Claude no ha generado recomendaciones con estos datos.
+      </p>
+    );
+  }
+  if (result.status === "unavailable") {
+    return (
+      <p className="text-sm text-ink-secondary">
+        {result.reason === "no_api_key"
+          ? "Configura la variable de entorno ANTHROPIC_API_KEY para activar las recomendaciones."
+          : "No se han podido generar las recomendaciones ahora mismo. Vuelve a intentarlo más tarde."}
+      </p>
+    );
+  }
+
+  return (
+    <ul className="grid gap-2">
+      {result.recommendations.map((r) => (
+        <li key={r.title} className="rounded-lg border border-hairline p-3">
+          <p className="text-xs font-medium text-ink-secondary">{TOPIC_LABEL[r.topic]}</p>
+          <p className="mt-0.5 text-sm font-medium text-ink">{r.title}</p>
+          <p className="mt-1 text-sm leading-relaxed text-ink">{r.detail}</p>
+          <p className="mt-1 text-xs text-ink-muted">Basado en: {r.basis}</p>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function Recommendations() {
+  const [state, setState] = useState<RecommendationsState>({ name: "idle" });
+
+  async function generate() {
+    setState({ name: "loading" });
+    try {
+      const res = await fetch("/api/insights", { method: "POST" });
+      setState({ name: "done", result: (await res.json()) as RecommendationsResponse });
+    } catch {
+      setState({ name: "done", result: { status: "unavailable", reason: "error" } });
+    }
+  }
+
+  return (
+    <div className="grid gap-3 rounded-lg border border-hairline p-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h3 className="text-sm font-semibold text-ink">Recomendaciones</h3>
+        <button
+          type="button"
+          onClick={generate}
+          disabled={state.name === "loading"}
+          className="rounded-lg bg-ink px-3 py-1.5 text-sm font-medium text-page transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          {state.name === "loading"
+            ? "Generando…"
+            : state.name === "done"
+              ? "Volver a generar"
+              : "Generar recomendaciones"}
+        </button>
+      </div>
+      <div aria-live="polite">
+        <RecommendationsBody state={state} />
+      </div>
+      <p className="text-xs text-ink-muted">
+        Las genera Claude a partir de tus cifras ya calculadas, no de las mediciones en bruto. No
+        sustituyen el consejo de un profesional sanitario.
+      </p>
+    </div>
   );
 }
 
@@ -230,6 +331,8 @@ export function InsightsPanel() {
           No se ha podido generar el resumen escrito en este momento.
         </p>
       ) : null}
+
+      <Recommendations />
     </PanelShell>
   );
 }

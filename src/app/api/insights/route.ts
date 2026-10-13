@@ -1,12 +1,15 @@
 import { asc } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
+import { betaZodOutputFormat } from "@anthropic-ai/sdk/helpers/beta/zod";
+import { z } from "zod";
 import { db, measurements } from "@/lib/db";
 import {
   rapidSwings,
   summarise,
   toDailySeries,
   trendRateKgPerWeek,
+  weightPhases,
   type DailyPoint,
   type Reading,
 } from "@/lib/stats";
@@ -81,6 +84,19 @@ export type InsightsStats = {
   };
 
   recentRapidSwings: { fromDate: string; toDate: string; deltaKg: number; days: number }[];
+
+  /** Oldest first; the last one is the phase in progress. */
+  phases: {
+    direction: "loss" | "gain";
+    startDate: string;
+    startKg: number;
+    endDate: string;
+    endKg: number;
+    deltaKg: number;
+    days: number;
+    rateKgPerWeek: number | null;
+    ongoing: boolean;
+  }[];
 
   longestGapDays: number | null;
   daysSinceLastReading: number | null;
@@ -166,6 +182,18 @@ async function computeStats(): Promise<InsightsStats> {
         days: s.days,
       })),
 
+    phases: weightPhases(points).map((p) => ({
+      direction: p.direction,
+      startDate: p.start.day,
+      startKg: p.start.weightKg!,
+      endDate: p.end.day,
+      endKg: p.end.weightKg!,
+      deltaKg: p.deltaKg,
+      days: p.days,
+      rateKgPerWeek: p.rateKgPerWeek,
+      ongoing: p.ongoing,
+    })),
+
     longestGapDays: longestGapDays(points),
     daysSinceLastReading,
 
@@ -238,5 +266,122 @@ export async function GET() {
       narrative: null,
       narrativeUnavailable: "error",
     });
+  }
+}
+
+const RECOMMENDATIONS_MODEL = "claude-opus-5-5";
+
+const RecommendationsSchema = z.object({
+  recommendations: z.array(
+    z.object({
+      topic: z.enum(["medicion", "tendencia", "mantenimiento", "profesional"]),
+      title: z.string(),
+      detail: z.string(),
+      basis: z.string(),
+    }),
+  ),
+});
+
+export type Recommendation = z.infer<typeof RecommendationsSchema>["recommendations"][number];
+
+/** Malformed JSON becomes a schema failure, reported with the rest below. */
+function parseJson(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+}
+
+export type RecommendationsResponse =
+  | { status: "ok"; recommendations: Recommendation[] }
+  | { status: "refused" }
+  | { status: "unavailable"; reason: "no_api_key" | "error" };
+
+const RECOMMENDATIONS_SYSTEM = `Propones recomendaciones prácticas, en español, a partir de las cifras ya calculadas del historial de peso y composición corporal de un usuario.
+
+Recibes un JSON con su peso actual, ritmos de cambio, fases de bajada y subida ("phases", de la más antigua a la más reciente; la que tiene "ongoing": true es la fase en curso), escáneres de composición, variaciones rápidas y huecos entre mediciones.
+
+Temas ("topic"):
+- "medicion": hábitos de medición — frecuencia, pesarse en las mismas condiciones, cuándo repetir un escáner de composición para ver si un cambio es grasa, músculo o agua.
+- "tendencia": cómo leer sus propios datos — la fase en curso comparada con sus fases anteriores (ritmo, duración), qué parte de una variación rápida es agua o glucógeno.
+- "mantenimiento": qué muestran sus datos sobre lo que pasa después de cada bajada y qué podría ayudarle a sostener un resultado.
+- "profesional": cuándo comentarlo con un profesional sanitario (endocrino, nutricionista o médico de cabecera), por ejemplo ante una subida o bajada rápida y sostenida.
+
+Límites:
+- No diagnostiques. No prescribas dietas, déficits, calorías, macronutrientes, suplementos ni medicación, y no fijes un peso objetivo.
+- Usa solo las cifras del JSON. En "basis" cita la cifra concreta en la que se apoya la recomendación.
+- Segunda persona, tono neutro y amable: sin culpa, sin alarmismo y sin lenguaje de retos o logros.
+- De 3 a 5 recomendaciones, de la más a la menos relevante. "title": una frase corta. "detail": de una a tres frases.`;
+
+/**
+ * Recommendations cost an Opus call with thinking, so they are generated on request
+ * rather than on every dashboard load like the narrative. As with the narrative, only
+ * the computed stats leave the server — never the raw measurement rows.
+ */
+export async function POST() {
+  if (!process.env.ANTHROPIC_API_KEY) {
+    return NextResponse.json<RecommendationsResponse>({
+      status: "unavailable",
+      reason: "no_api_key",
+    });
+  }
+
+  const stats = await computeStats();
+
+  try {
+    // create() rather than parse(): parse() validates every text block before returning,
+    // so a refusal carrying partial text would throw instead of reading as a refusal.
+    const response = await new Anthropic().beta.messages.create({
+      model: RECOMMENDATIONS_MODEL,
+      max_tokens: 16000,
+      // A safety-classifier decline is re-run server-side on the model the API picks for
+      // that category, so a health topic tripping a classifier still gets an answer.
+      betas: ["server-side-fallback-2026-07-01"],
+      fallbacks: "default",
+      system: RECOMMENDATIONS_SYSTEM,
+      output_config: { effort: "medium", format: betaZodOutputFormat(RecommendationsSchema) },
+      messages: [
+        {
+          role: "user",
+          content: `Estas son las cifras ya calculadas a partir de mi historial de peso y composición corporal:\n\n${JSON.stringify(stats, null, 2)}`,
+        },
+      ],
+    });
+
+    if (response.stop_reason === "refusal") {
+      return NextResponse.json<RecommendationsResponse>({ status: "refused" });
+    }
+
+    // The last text block: after a fallback, earlier blocks belong to the declined model.
+    const text = response.content
+      .filter((b): b is Anthropic.Beta.BetaTextBlock => b.type === "text")
+      .at(-1)?.text;
+    const parsed =
+      response.stop_reason === "end_turn" && text !== undefined
+        ? RecommendationsSchema.safeParse(parseJson(text))
+        : null;
+    if (!parsed?.success || parsed.data.recommendations.length === 0) {
+      console.error(`recommendations: unusable response (stop_reason ${response.stop_reason})`);
+      return NextResponse.json<RecommendationsResponse>(
+        { status: "unavailable", reason: "error" },
+        { status: 502 },
+      );
+    }
+
+    return NextResponse.json<RecommendationsResponse>({
+      status: "ok",
+      recommendations: parsed.data.recommendations,
+    });
+  } catch (error) {
+    // Only the error class and status are logged: the request itself carries health data.
+    console.error(
+      "recommendations: request failed",
+      error instanceof Anthropic.APIError ? `${error.status} ${error.name}` : (error as Error)?.name,
+    );
+    return NextResponse.json<RecommendationsResponse>(
+      { status: "unavailable", reason: "error" },
+      { status: 502 },
+    );
   }
 }
